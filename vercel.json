@@ -1,0 +1,13 @@
+{
+    "version": 2,
+    "build": [
+        {
+            "src": "index.html",
+            "use": "@vercel/node"
+        },
+        {
+            "src": "/(.*)",
+            "dest": "/e"
+        }
+    ]
+}
