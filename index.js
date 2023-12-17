@@ -229,7 +229,10 @@ run().catch(console.dir);
 app.get("/", (req, res) => {
   res.send("  Server is up and running");
 });
+app.get("/home", (req, res) => {
+  res.send("  Server running on home");
+});
 
 app.listen(port, () => {
-  console.log(`Server started on port ${port}`);
+  console.log(`Server started on  http://localhost:${port} `);
 });
