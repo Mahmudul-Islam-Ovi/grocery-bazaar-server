@@ -1,10 +1,16 @@
 const express = require("express");
-const app = express();
 const cors = require("cors");
+const SSLCommerzPayment = require("sslcommerz-lts");
 const jwt = require("jsonwebtoken");
 require("dotenv").config();
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
+
+const app = express();
 const port = process.env.PORT || 4000;
+
+const store_id = process.env.STORE_ID;
+const store_passwd = process.env.STORE_PASSWORD;
+const is_live = false; //true for live, false for sandbox
 
 //middleware
 app.use(cors());
@@ -79,6 +85,32 @@ async function run() {
       next();
     };
 
+    // admin home page
+    app.get("/admin-status", verifyToken, verifyToken, async (req, res) => {
+      const users = await userCollection.estimatedDocumentCount();
+      const products = await productsCollection.estimatedDocumentCount();
+      const orders = await orderCollection.estimatedDocumentCount();
+      // payment
+      /*
+      const payments = await paymentCollection.aggregate([
+        {
+          $group: {
+            _id: "$status",
+            total: { $sum: "$total" },
+          }
+        }
+      ]).toArray();
+
+      another way to do this  
+
+      const payments = await paymentCollection.find().toArray();
+      const revenue = payments.reduce((sum, payment) =>  sum + payment.price,0);
+      
+       */
+
+      res.send({ users, products, orders });
+    });
+
     // user api
 
     app.post("/users", async (req, res) => {
@@ -142,8 +174,127 @@ async function run() {
     // post order
     app.post("/orders", verifyToken, async (req, res) => {
       const order = req.body;
-      const result = await orderCollection.insertOne(order);
-      res.json(result);
+      if (!order) {
+        return res
+          .status(400)
+          .send({ error: true, message: "Please provide a valid order" });
+      }
+      const productDetails = order.orderProduct.map((product) => ({
+        name: product.name,
+        category: product.category,
+      }));
+
+      const productNames = productDetails
+        .map((product) => product.name)
+        .join(", ");
+      const productCategories = productDetails
+        .map((product) => product.category)
+        .join(", ");
+
+      const transactionId = new ObjectId().toString();
+
+      const data = {
+        total_amount: order.totalAmount,
+        currency: "BDT",
+        tran_id: transactionId, // use unique tran_id for each api call
+        success_url: `${process.env.SERVER_URL}/payment/success?transactionId=${transactionId}`,
+        fail_url: `${process.env.SERVER_URL}/payment/fail?transactionId=${transactionId}`,
+        cancel_url: `${process.env.SERVER_URL}/payment/cancle?transactionId=${transactionId}`,
+        ipn_url: "http://localhost:3030/ipn",
+        shipping_method: "Courier",
+        product_name: productNames,
+        product_category: productCategories,
+        product_profile: "general",
+        cus_name: order.personName,
+        cus_email: order.email,
+        cus_add1: order.address,
+        cus_add2: "Dhaka",
+        cus_city: "Dhaka",
+        cus_state: "Dhaka",
+        cus_postcode: "1000",
+        cus_country: "Bangladesh",
+        cus_phone: order.personName,
+        cus_fax: "01711111111",
+        ship_name: order.personName,
+        ship_add1: order.address,
+        ship_add2: "Dhaka",
+        ship_city: "Dhaka",
+        ship_state: "Dhaka",
+        ship_postcode: 1000,
+        ship_country: "Bangladesh",
+      };
+
+      // console.log(data);
+      // res.send(data);
+
+      const sslcz = new SSLCommerzPayment(store_id, store_passwd, is_live);
+      sslcz.init(data).then((apiResponse) => {
+        // Redirect the user to payment gateway
+        let GatewayPageURL = apiResponse.GatewayPageURL;
+        orderCollection.insertOne({
+          ...order,
+          transactionId,
+          paymentStatus: false,
+          paymentMethod: "sslcommerz",
+        });
+        res.send({ url: GatewayPageURL });
+      });
+    });
+
+    // payment success api
+    app.post("/payment/success", async (req, res) => {
+      const { transactionId } = req.query;
+      if (!transactionId) {
+        return res.redirect(`${process.env.CLIENT_URL}/dashboard/failed`);
+      }
+      const result = await orderCollection.updateOne(
+        { transactionId },
+        {
+          $set: {
+            paymentStatus: true,
+            paidAt: new Date(),
+          },
+        }
+      );
+      if (result.modifiedCount > 0) {
+        res.redirect(
+          `${process.env.CLIENT_URL}/dashboard/success?transactionId=${transactionId}`
+        );
+      } else {
+        res.send("failed");
+      }
+    });
+    // payment fail api
+    app.post("/payment/fail", async (req, res) => {
+      const { transactionId } = req.query;
+      if (!transactionId) {
+        return res.redirect(`${process.env.CLIENT_URL}/dashboard/failed`);
+      }
+      const result = await orderCollection.deleteOne({ transactionId });
+      if (result.deletedCount) {
+        res.redirect(`${process.env.CLIENT_URL}/dashboard/failed`);
+      }
+    });
+
+    // payment cancel api
+    app.post("/payment/cancel", async (req, res) => {
+      // const transactionId = req.body.tran_id;
+      // const query = { transactionId: transactionId };
+      // const updateDoc = {
+      //   $set: {
+      //     PaymentStatus: false,
+      //   },
+      // };
+      // const result = await orderCollection.updateOne(query, updateDoc);
+      res.json("PAYMENT CANCEL");
+    });
+
+    // get order by transaction id
+    app.get("/orders/transaction/:id", async (req, res) => {
+      const id = req.params.id;
+      const query = { transactionId: id };
+      const result = await orderCollection.findOne(query);
+      res.send(result);
     });
 
     // get orders
